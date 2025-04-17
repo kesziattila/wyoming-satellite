@@ -13,7 +13,7 @@ from typing import Callable, Dict, Final, List, Optional, Set, Union
 
 from pyring_buffer import RingBuffer
 from wyoming.asr import Transcript
-from wyoming.audio import AudioChunk, AudioFormat, AudioStart, AudioStop
+from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncClient
 from wyoming.error import Error
 from wyoming.event import Event, async_write_event
@@ -75,6 +75,7 @@ class SatelliteBase:
     """Base class for satellites."""
 
     def __init__(self, settings: SatelliteSettings) -> None:
+        self._conversation_end = False
         self.settings = settings
         self.server_id: Optional[str] = None
         self._state = State.NOT_STARTED
@@ -253,6 +254,13 @@ class SatelliteBase:
         """Called when an event is received from the server."""
         forward_event = True
 
+
+        if event.type not in ('audio-chunk','ping','pong'):
+            _LOGGER.debug("Event from server: ")
+            _LOGGER.debug(event)
+        # else:
+        #     _LOGGER.debug('audio-chunk event got')
+
         if Ping.is_type(event.type):
             # Respond with pong
             ping = Ping.from_event(event)
@@ -280,6 +288,8 @@ class SatelliteBase:
             # TTS stopped
             await self.event_to_snd(event)
             await self.trigger_tts_stop()
+            _LOGGER.debug("TTS done")
+            _LOGGER.debug(event)
         elif Detect.is_type(event.type):
             # Wake word detection started
             await self.trigger_detect()
@@ -300,7 +310,13 @@ class SatelliteBase:
         elif Synthesize.is_type(event.type):
             # TTS request
             _LOGGER.debug(event)
-            await self.trigger_synthesize(Synthesize.from_event(event))
+            synth_event = Synthesize.from_event(event)
+            await self.trigger_synthesize(synth_event)
+            _LOGGER.debug("Synthesize done")
+            if synth_event.text.endswith("###"):
+                self._conversation_end = True
+            else:
+                self._conversation_end = False
         elif Error.is_type(event.type):
             _LOGGER.warning(event)
             await self.trigger_error(Error.from_event(event))
@@ -321,16 +337,16 @@ class SatelliteBase:
         if forward_event:
             await self.forward_event(event)
 
-    async def _send_run_pipeline(self, pipeline_name: Optional[str] = None) -> None:
+    async def _send_run_pipeline(self, wake_word_name: Optional[str] = None, instant_asr: Optional[bool] = False) -> None:
         """Sends a RunPipeline event with the correct stages."""
-        if self.settings.wake.enabled:
+        if self.settings.wake.enabled or instant_asr:
             # Local wake word detection
             start_stage = PipelineStage.ASR
-            restart_on_end = False
         else:
             # Remote wake word detection
             start_stage = PipelineStage.WAKE
-            restart_on_end = not self.settings.vad.enabled
+
+        restart_on_end = False
 
         if self.settings.snd.enabled:
             # Play TTS response
@@ -342,13 +358,8 @@ class SatelliteBase:
         run_pipeline = RunPipeline(
             start_stage=start_stage,
             end_stage=end_stage,
-            name=pipeline_name,
+            wake_word_name=wake_word_name,
             restart_on_end=restart_on_end,
-            snd_format=AudioFormat(
-                rate=self.settings.snd.rate,
-                width=self.settings.snd.width,
-                channels=self.settings.snd.channels,
-            ),
         ).event()
         _LOGGER.debug(run_pipeline)
         await self.event_to_server(run_pipeline)
@@ -861,6 +872,17 @@ class SatelliteBase:
         await run_event_command(self.settings.event.played)
         await self.forward_event(Played().event())
 
+        if self._conversation_end:
+            _LOGGER.debug('tts played, conversation end, restart full pipeline with wakeword detection')
+            # await self._play_wav(self.settings.snd.done_wav)
+            await self._send_run_pipeline()
+            await self.trigger_streaming_start()
+        else:
+            _LOGGER.debug('tts played, conversation not end, restart pipeline with instant speech recognition')
+            await self._play_wav(self.settings.snd.awake_wav)
+            await self._send_run_pipeline(None, True)
+            await self.trigger_streaming_start()
+
     async def trigger_transcript(self, transcript: Transcript) -> None:
         """Called when speech-to-text text is received."""
         await run_event_command(self.settings.event.transcript, transcript.text)
@@ -1011,6 +1033,9 @@ class AlwaysStreamingSatellite(SatelliteBase):
                 # Re-trigger streaming start even though we technically don't stop
                 # so the event service can reset LEDs, etc.
                 await self.trigger_streaming_start()
+
+            if Error.is_type(event.type):
+                await self._send_run_pipeline()
 
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
@@ -1361,16 +1386,9 @@ class WakeStreamingSatellite(SatelliteBase):
             # Forward to the server
             await self.event_to_server(event)
 
-            # Match detected wake word name with pipeline name
-            pipeline_name: Optional[str] = None
-            if self.settings.wake.names:
-                detection_name = normalize_wake_word(detection.name)
-                for wake_name in self.settings.wake.names:
-                    if normalize_wake_word(wake_name.name) == detection_name:
-                        pipeline_name = wake_name.pipeline
-                        break
-
-            await self._send_run_pipeline(pipeline_name=pipeline_name)
+            await self._send_run_pipeline(
+                wake_word_name=normalize_wake_word(detection.name)
+            )
             await self.forward_event(event)  # forward to event service
             await self.trigger_detection(Detection.from_event(event))
             await self.trigger_streaming_start()

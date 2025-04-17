@@ -7,8 +7,10 @@ import sys
 from functools import partial
 from pathlib import Path
 
-from wyoming.info import Attribution, Info, Satellite
+from wyoming.info import Attribution, Info, Satellite, MicProgram, SndProgram, IntentProgram, IntentModel, \
+    HandleProgram, HandleModel
 from wyoming.server import AsyncServer, AsyncTcpServer
+from wyoming.audio import AudioFormat
 
 from . import __version__
 from .event_handler import SatelliteEventHandler
@@ -342,17 +344,6 @@ async def main() -> None:
         args.debug_recording_dir = Path(args.debug_recording_dir)
         _LOGGER.info("Recording audio to %s", args.debug_recording_dir)
 
-    wyoming_info = Info(
-        satellite=Satellite(
-            name=args.name,
-            area=args.area,
-            description=args.name,
-            attribution=Attribution(name="", url=""),
-            installed=True,
-            version=__version__,
-        )
-    )
-
     settings = SatelliteSettings(
         mic=MicSettings(
             uri=args.mic_uri,
@@ -425,6 +416,71 @@ async def main() -> None:
             finished_wav_delay=args.timer_finished_wav_repeat[1],
         ),
         debug_recording_dir=args.debug_recording_dir,
+    )
+
+    wyoming_info = Info(
+        satellite=Satellite(
+            name=args.name,
+            area=args.area,
+            description=args.name,
+            attribution=Attribution(name="", url=""),
+            installed=True,
+            version=__version__,
+        ),
+        snd=[SndProgram(
+            name=args.name,
+            description=args.name,
+            attribution=Attribution(name="", url=""),
+            installed=True,
+            version=__version__,
+            snd_format=AudioFormat(
+                rate=settings.snd.rate,
+                width=settings.snd.width,
+                channels=settings.snd.channels,
+            ),
+        )],
+        mic=[MicProgram(
+            name=args.name,
+            description=args.name,
+            attribution=Attribution(name="", url=""),
+            installed=True,
+            version=__version__,
+            mic_format=AudioFormat(
+                rate=settings.mic.rate,
+                width=settings.mic.width,
+                channels=settings.mic.channels,
+            ),
+        )],
+        handle=[HandleProgram(
+            name=args.name,
+            description=args.name,
+            attribution=Attribution(name="", url=""),
+            installed=True,
+            version=__version__,
+            models=[HandleModel(
+                name=args.name,
+                languages=['hu-HU'],
+                description=args.name,
+                attribution=Attribution(name="", url=""),
+                installed=True,
+                version=__version__,
+            )]
+        )],
+        intent=[IntentProgram(
+            name=args.name,
+            description=args.name,
+            attribution=Attribution(name="", url=""),
+            installed=True,
+            version=__version__,
+            models=[IntentModel(
+                name=args.name,
+                languages=['hu-HU'],
+                description=args.name,
+                attribution=Attribution(name="", url=""),
+                installed=True,
+                version=__version__,
+            )]
+        )]
     )
 
     satellite: SatelliteBase
