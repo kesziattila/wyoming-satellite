@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name        = "wyoming_satellite"
-version     = "1.4.1"
+version     = "1.4.1-4"
 license     = {text = "MIT"}
 description = "Wyoming server for remote voice satellite"
 readme      = "README.md"
@@ -24,7 +24,7 @@ classifiers = [
 ]
 requires-python = ">=3.9.0"
 dependencies = [
-    "wyoming==1.5.4",
+    "wyoming==1.6.0",
     "zeroconf==0.88.0",
     "pyring-buffer>=1,<2",
 ]
@@ -49,7 +49,7 @@ dev = [
 wyoming-satellite = "wyoming_satellite:__main__.run"
 
 [project.urls]
-"Source Code" = "http://github.com/rhasspy/wyoming-satellite"
+"Source Code" = "http://github.com/kesziattila/wyoming-satellite"
 
 [tool.setuptools]
 platforms = ["any"]
@@ -57,5 +57,5 @@ zip-safe  = true
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["wyoming_satellite"]
+include = ["wyoming_satellite", "wyoming_satellite.*"]
 exclude = ["tests", "tests.*"]
