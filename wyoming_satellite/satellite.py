@@ -872,17 +872,6 @@ class SatelliteBase:
         await run_event_command(self.settings.event.played)
         await self.forward_event(Played().event())
 
-        if self._conversation_end:
-            _LOGGER.debug('tts played, conversation end, restart full pipeline with wakeword detection')
-            # await self._play_wav(self.settings.snd.done_wav)
-            await self._send_run_pipeline()
-            await self.trigger_streaming_start()
-        else:
-            _LOGGER.debug('tts played, conversation not end, restart pipeline with instant speech recognition')
-            await self._play_wav(self.settings.snd.awake_wav)
-            await self._send_run_pipeline(None, True)
-            await self.trigger_streaming_start()
-
     async def trigger_transcript(self, transcript: Transcript) -> None:
         """Called when speech-to-text text is received."""
         await run_event_command(self.settings.event.transcript, transcript.text)
@@ -1006,6 +995,20 @@ class AlwaysStreamingSatellite(SatelliteBase):
         if settings.wake.enabled:
             _LOGGER.warning("Local wake word detection is enabled but will not be used")
 
+    async def trigger_played(self) -> None:
+
+        await super().trigger_played()
+
+        if self._conversation_end:
+            _LOGGER.debug('tts played, conversation end, restart full pipeline with wakeword detection')
+            await self._send_run_pipeline()
+            await self.trigger_streaming_start()
+        else:
+            _LOGGER.debug('tts played, conversation not end, restart pipeline with instant speech recognition')
+            await self._play_wav(self.settings.snd.awake_wav)
+            await self._send_run_pipeline(None, True)
+            await self.trigger_streaming_start()
+
     async def event_from_server(self, event: Event) -> None:
         await super().event_from_server(event)
 
@@ -1113,6 +1116,23 @@ class VadStreamingSatellite(SatelliteBase):
             # Stop debug recording
             if self.stt_audio_writer is not None:
                 self.stt_audio_writer.stop()
+
+    async def trigger_played(self) -> None:
+
+        await super().trigger_played()
+
+        if self._conversation_end:
+            _LOGGER.debug('tts played, conversation end, restart full pipeline with VAD detection')
+            await self._send_run_pipeline()
+            await self.trigger_streaming_start()
+            self.is_streaming = False
+            _LOGGER.info("Waiting for speech")
+        else:
+            _LOGGER.debug('tts played, conversation not end, restart pipeline with instant speech recognition')
+            await self._play_wav(self.settings.snd.awake_wav)
+            await self._send_run_pipeline(None, True)
+            await self.trigger_streaming_start()
+            self.is_streaming = True
 
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
@@ -1229,6 +1249,7 @@ class WakeStreamingSatellite(SatelliteBase):
 
         super().__init__(settings)
         self.is_streaming = False
+        self._conversation_wake_word = None
 
         # Timestamp in the future when the refractory period is over (set with
         # time.monotonic()).
@@ -1283,21 +1304,20 @@ class WakeStreamingSatellite(SatelliteBase):
             if is_pause_satellite:
                 self._is_paused = True
                 _LOGGER.debug("Satellite is paused")
+            elif is_transcript or is_error:
+                # Go back to wake word detection ONLY if conversation ended
+                # Otherwise, the trigger_played method will handle restarting the pipeline
+                if self._conversation_end:
+                    await self._restart_wake_detect()
             else:
-                # Go back to wake word detection
-                await self.trigger_streaming_stop()
+                # For RunSatellite, always go back to wake word detection
+                await self._restart_wake_detect()
 
-                # It's possible to be paused in the middle of streaming
-                if not self._is_paused:
-                    await self._send_wake_detect()
-                    _LOGGER.info("Waiting for wake word")
-
-                    # Start debug recording (wake)
-                    self._debug_recording_timestamp = time.monotonic_ns()
-                    if self.wake_audio_writer is not None:
-                        self.wake_audio_writer.start(
-                            timestamp=self._debug_recording_timestamp
-                        )
+    async def _restart_wake_detect(self):
+        await self.trigger_streaming_stop()
+        # It's possible to be paused in the middle of streaming
+        if not self._is_paused:
+            await self._start_wake_detect()
 
     async def trigger_server_disonnected(self) -> None:
         await super().trigger_server_disonnected()
@@ -1338,6 +1358,37 @@ class WakeStreamingSatellite(SatelliteBase):
         else:
             # Forward to wake word service
             await self.event_to_wake(event)
+
+    async def trigger_played(self) -> None:
+
+        await super().trigger_played()
+
+        if self._conversation_end:
+            _LOGGER.debug('tts played, conversation end, restart full pipeline with wakeword detection')
+            await self._send_run_pipeline()
+            await self._start_wake_detect()
+            self.is_streaming = False
+            await self.trigger_streaming_stop()
+        else:
+            _LOGGER.debug('tts played, conversation not end, restart pipeline with instant speech recognition')
+            await self._play_wav(self.settings.snd.awake_wav)
+            await self._send_run_pipeline(self._conversation_wake_word)
+            await self.trigger_streaming_start()
+            self.is_streaming = True
+
+    async def _start_wake_detect(self):
+        await self._debug_wake_recording()
+        # Go back to wake word detection
+        await self._send_wake_detect()
+        _LOGGER.info("Waiting for wake word")
+
+    async def _debug_wake_recording(self):
+        # Start debug recording (wake)
+        self._debug_recording_timestamp = time.monotonic_ns()
+        if self.wake_audio_writer is not None:
+            self.wake_audio_writer.start(
+                timestamp=self._debug_recording_timestamp
+            )
 
     async def event_from_wake(self, event: Event) -> None:
         if Info.is_type(event.type):
@@ -1386,9 +1437,8 @@ class WakeStreamingSatellite(SatelliteBase):
             # Forward to the server
             await self.event_to_server(event)
 
-            await self._send_run_pipeline(
-                wake_word_name=normalize_wake_word(detection.name)
-            )
+            self._conversation_wake_word = normalize_wake_word(detection.name)
+            await self._send_run_pipeline(wake_word_name=self._conversation_wake_word)
             await self.forward_event(event)  # forward to event service
             await self.trigger_detection(Detection.from_event(event))
             await self.trigger_streaming_start()
